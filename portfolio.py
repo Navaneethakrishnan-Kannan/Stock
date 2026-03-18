@@ -4,9 +4,10 @@ import requests
 from bs4 import BeautifulSoup
 from pyxirr import xirr
 from datetime import datetime
+import plotly.express as px
 
-st.set_page_config(page_title="Direct Google Finance Tracker", layout="wide")
-st.title("📊 Live NSE Portfolio (via Google Finance)")
+st.set_page_config(page_title="NSE Portfolio Tracker", layout="wide")
+st.title("📊 Live NSE Portfolio (Google Finance)")
 
 # 1. Your Purchase Data
 def get_my_portfolio():
@@ -21,54 +22,50 @@ def get_my_portfolio():
     df['Bought date'] = pd.to_datetime(df['Bought date'])
     return df
 
-@st.cache_data(ttl=300) # Cache for 5 minutes
+@st.cache_data(ttl=300)
 def scrape_google_finance(ticker):
-    """Scrapes Price and Div Yield directly from Google Finance"""
     url = f"https://www.google.com/finance/quote/{ticker}:NSE"
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
     
     try:
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Get Price
-        price_class = "YMlKec fxKbKc" # This is Google's CSS class for price
-        price_text = soup.find("div", {"class": price_class}).text
-        price = float(price_text.replace("₹", "").replace(",", ""))
+        # Finding Price
+        price_element = soup.find("div", {"class": "YMlKec fxKbKc"})
+        price = float(price_element.text.replace("₹", "").replace(",", "")) if price_element else None
         
-        # Get Dividend Yield (Found in the info table)
-        # We look for the div that contains 'Yield' and get its sibling
+        # Finding Yield
         div_yield = 0.0
-        for item in soup.find_all('div', {'class': 'mfs7Fc'}):
+        info_items = soup.find_all('div', {'class': 'mfs7Fc'})
+        for item in info_items:
             if 'Yield' in item.text:
-                yield_val = item.find_next_sibling('div').text
-                if yield_val != '-':
-                    div_yield = float(yield_val.replace('%', ''))
+                val = item.find_next_sibling('div').text
+                if val != '-':
+                    div_yield = float(val.replace('%', ''))
                 break
-                
         return price, div_yield
-    except Exception as e:
-        return None, None
+    except:
+        return None, 0.0
 
-# --- Main Logic ---
-portfolio = get_my_portfolio()
+# --- MAIN LOGIC ---
+portfolio_input = get_my_portfolio()
 results = []
 today = datetime.now()
 
-with st.spinner("Scraping live data from Google Finance..."):
-    for _, row in portfolio.iterrows():
+with st.spinner("Scraping live data..."):
+    for _, row in portfolio_input.iterrows():
         price, dy = scrape_google_finance(row['Ticker'])
         
-        # Fallback if scraping fails
-        curr_price = price if price else row['Bought price']
-        curr_yield = dy if dy else 0.0
+        # Use live price if available, otherwise fallback to bought price
+        curr_price = price if price is not None else row['Bought price']
         
         invested = row['Bought price'] * row['Quantity']
         current_val = curr_price * row['Quantity']
         abs_return = current_val - invested
-        pct_return = (abs_return / invested) * 100
+        pct_return = (abs_return / invested) * 100 if invested > 0 else 0
         
-        # XIRR
+        # XIRR Calculation
         cash_flows = {row['Bought date']: -invested, today: current_val}
         try:
             stock_xirr = xirr(cash_flows) * 100
@@ -77,53 +74,49 @@ with st.spinner("Scraping live data from Google Finance..."):
 
         results.append({
             'Stock': row['Stock'],
+            'Bought Date': row['Bought date'].date(),
             'Current Price': curr_price,
-            'Div Yield (%)': curr_yield,
+            'Div Yield (%)': dy,
             'Absolute Return': round(abs_return, 2),
             '% Return': round(pct_return, 2),
             'XIRR (%)': round(stock_xirr, 2),
             'Current Value': current_val,
-            'Invested Value': invested,
-            'Bought Date': row['Bought date'].date()
+            'Invested Value': invested
         })
 
+# Create the DataFrame
 pdf = pd.DataFrame(results)
 
-# --- Display Dashboard ---
-t_inv = pdf['Invested Value'].sum()
-t_curr = pdf['Current Value'].sum()
+# --- DISPLAY LOGIC (Only runs if pdf is not empty) ---
+if not pdf.empty:
+    t_inv = pdf['Invested Value'].sum()
+    t_curr = pdf['Current Value'].sum()
+    t_profit = t_curr - t_inv
 
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("Total Invested", f"₹{t_inv:,.0f}")
-m2.metric("Portfolio Value", f"₹{t_curr:,.0f}")
-m3.metric("Absolute Profit", f"₹{t_curr - t_inv:,.0f}", f"{((t_curr/t_inv)-1)*100:.2f}%")
+    # Top Metrics
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Total Invested", f"₹{t_inv:,.0f}")
+    m2.metric("Current Value", f"₹{t_curr:,.0f}", f"{(t_profit/t_inv*100):.2f}%")
+    m3.metric("Absolute Profit", f"₹{t_profit:,.0f}")
 
-# Aggregate XIRR
-agg_flows = {}
-for _, row in portfolio.iterrows():
-    inv_amt = row['Bought price'] * row['Quantity']
-    agg_flows[row['Bought date']] = agg_flows.get(row['Bought date'], 0) - inv_amt
-agg_flows[today] = t_curr
-try:
-    total_xirr = xirr(agg_flows) * 100
-    m4.metric("Overall XIRR", f"{total_xirr:.2f}%")
-except:
-    m4.metric("Overall XIRR", "0%")
+    st.divider()
 
-st.divider()
+    # Performance Table
+    st.subheader("Stock Performance")
+    def color_negative_red(val):
+        color = 'red' if val < 0 else 'green'
+        return f'color: {color}'
 
-# Styled Table
-def color_val(val):
-    color = 'red' if val < 0 else 'green'
-    return f'color: {color}'
+    st.dataframe(
+        pdf[['Stock', 'Bought Date', 'Current Price', 'Div Yield (%)', 'Absolute Return', '% Return', 'XIRR (%)']]
+        .style.map(color_negative_red, subset=['Absolute Return', '% Return', 'XIRR (%)']),
+        use_container_width=True
+    )
 
-st.subheader("Performance Breakdown")
-st.dataframe(
-    pdf[['Stock', 'Bought Date', 'Current Price', 'Div Yield (%)', 'Absolute Return', '% Return', 'XIRR (%)']]
-    .style.map(color_val, subset=['Absolute Return', '% Return', 'XIRR (%)']),
-    use_container_width=True
-)
+    # Pie Chart
+    st.divider()
+    fig = px.pie(pdf, values='Current Value', names='Stock', title="Portfolio Allocation", hole=0.4)
+    st.plotly_chart(fig, use_container_width=True)
 
-# Chart
-fig = px.pie(pdf, values='Current Value', names='Stock', title="Portfolio Weightage", hole=0.5)
-st.plotly_chart(fig, use_container_width=True)
+else:
+    st.error("Failed to generate portfolio data. Please check your internet connection.")
