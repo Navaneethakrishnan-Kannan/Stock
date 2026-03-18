@@ -1,9 +1,18 @@
 import streamlit as st
 import pandas as pd
-import yfinance as yf
 import plotly.express as px
 from pyxirr import xirr
 from datetime import datetime
+
+try:
+    import yfinance as yf
+except ModuleNotFoundError:
+    st.error(
+        "Missing dependency `yfinance`.\n\n"
+        "Install it in this project's venv:\n"
+        "`venv\\Scripts\\python -m pip install -r requirements.txt`"
+    )
+    st.stop()
 
 # Page config
 st.set_page_config(page_title="Investment Portfolio", layout="wide")
