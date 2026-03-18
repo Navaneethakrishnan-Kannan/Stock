@@ -1,5 +1,10 @@
+streamlit
+pywin32
 pandas
+openpyxl
+numpy
+PyMuPDF
+xlsxwriter
 yfinance
 plotly
 pyxirr
-streamlit
